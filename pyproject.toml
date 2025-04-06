@@ -32,6 +32,7 @@ DEP002 = ["cfgrib", "netcdf4"]
 
 
 [tool.poetry.group.dev.dependencies]
+coverage = "^7.8.0"
 pre-commit = "^4.2.0"
 deptry = "^0.23.0"
 pytest = "^8.3.5"
