@@ -56,7 +56,7 @@ def read_efas_config(rivers_data: Iterable[RiverRawData]) -> pd.DataFrame:
         names.append(raw_river.name)
         efas_values = raw_river.raw_data
         mouth_latitude.append(np.float32(efas_values["latitude"]))
-        mouth_longitude.append(np.float32(efas_values["latitude_index"]))
+        mouth_longitude.append(np.float32(efas_values["longitude"]))
         mouth_lat_index.append(int(efas_values["latitude_index"]))
         mouth_lon_index.append(int(efas_values["longitude_index"]))
     overall_data = pd.DataFrame(
@@ -69,7 +69,7 @@ def read_efas_config(rivers_data: Iterable[RiverRawData]) -> pd.DataFrame:
             "mouth_longitude_index": mouth_lon_index,
         }
     )
-    overall_data.set_index(["id", "name"])
+    overall_data.set_index(["id", "name"], inplace=True)
     return overall_data
 
 
