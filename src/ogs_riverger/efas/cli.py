@@ -7,10 +7,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import ogs_riverger.efas.download_tools as efas_download
-from ogs_riverger.efas.efas_config import read_efas_config_file
 from ogs_riverger.efas.efas_manager import generate_efas_climatology
 from ogs_riverger.efas.efas_manager import generate_efas_domain_file
 from ogs_riverger.efas.efas_manager import read_efas_data_files
+from ogs_riverger.read_config import RiverConfig
 from ogs_riverger.settings import Settings
 from ogs_riverger.utils.argparse_types import date_from_str
 from ogs_riverger.utils.argparse_types import dir_to_be_created_if_not_exists
@@ -391,7 +391,7 @@ def efas_cli(args: argparse.Namespace, settings: Settings) -> int:
                 "The following files will be processed: %s",
                 ", ".join([str(p) for p in args.input_files]),
             )
-            config_content = read_efas_config_file(args.config_file)
+            config_content = RiverConfig.from_json(args.config_file)
             river_dataset = read_efas_data_files(
                 args.input_files,
                 config_content,
@@ -415,7 +415,7 @@ def efas_cli(args: argparse.Namespace, settings: Settings) -> int:
                 year = int(mask_match.group("year"))
                 climatology_files[year] = f
 
-            config_content = read_efas_config_file(args.config_file)
+            config_content = RiverConfig.from_json(args.config_file)
 
             if len(climatology_files) == 0:
                 logger.error("No files found in directory %s", args.input_dir)
@@ -428,7 +428,7 @@ def efas_cli(args: argparse.Namespace, settings: Settings) -> int:
             )
             logger.info("Done")
         case "download-generate-climatology":
-            config_content = read_efas_config_file(args.config_file)
+            config_content = RiverConfig.from_json(args.config_file)
             bb_box = efas_download.build_efas_area_selection(
                 north=args.bb_north,
                 south=args.bb_south,

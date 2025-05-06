@@ -1,4 +1,3 @@
-import shutil
 from datetime import datetime
 from datetime import timedelta
 from itertools import product as cart_prod
@@ -9,7 +8,6 @@ from unittest.mock import patch
 from zipfile import ZipFile
 
 import numpy as np
-import pandas as pd
 import pytest
 import xarray as xr
 from pydantic import SecretStr
@@ -23,7 +21,6 @@ from ogs_riverger.efas.download_tools import EfasDataSource
 from ogs_riverger.efas.download_tools import EfasOperationalDownloader
 from ogs_riverger.efas.download_tools import get_cdsapi_client
 from ogs_riverger.efas.download_tools import HistoricalCDSApiRequest
-from ogs_riverger.efas.efas_config import read_efas_config_file
 from ogs_riverger.efas.efas_manager import generate_efas_climatology
 from ogs_riverger.efas.efas_manager import generate_efas_domain_file
 from ogs_riverger.efas.efas_manager import read_efas_data_files
@@ -43,6 +40,14 @@ class CDSClientMock:
 
     def get_requests(self) -> tuple[dict, ...]:
         return tuple(self._requests)
+
+
+@pytest.fixture
+def efas_domain_file(test_data_dir):
+    """
+    Return a path to a file containing the EFAS domain.
+    """
+    return test_data_dir / "efas_domain.nc"
 
 
 class EfasLikeFileGenerator:
@@ -77,7 +82,7 @@ class EfasLikeFileGenerator:
 
     def create(self, output_file: Path):
         lats = self._efas_domain.latitude.values[1500:2500]
-        lons = self._efas_domain.longitude.values[2000:2500]
+        lons = self._efas_domain.longitude.values[1600:2500]
 
         time_dim = int(
             (self._end_time - self._start_time).total_seconds() / (3600 * 6)
@@ -119,112 +124,6 @@ class EfasLikeFileGenerator:
             zip_file.write(nc_path, arcname=nc_path.name)
 
 
-@pytest.fixture(scope="module")
-def river_config_json_example(tmpdir_factory):
-    """
-    Returns an example of two JSON files with a dummy river configuration.
-    """
-    main = """
-    {
-      "defaults": {
-        "profiles": {
-          "tyr": {"O2o": 240, "N1p": 0.28, "N3n": 2.23},
-          "adr_ion": {"O2o": 240, "N1p": 0.059, "N3n": 1.74}
-        }
-      },
-      "rivers": [
-        {
-          "id": 0, "name": "Roia", "data_source": {
-            "type": "EFAS",
-            "longitude": 7.60833333, "latitude": 43.79166667,
-            "longitude_index": 1707, "latitude_index": 1971
-          },
-          "geometry": {
-              "mouth_longitude": 7.60607812492043,
-              "mouth_latitude": 43.7889609932052
-          },
-          "biogeochemical": {"profile": "tyr"}
-        },
-        {
-          "id": 77, "name": "Timavo", "runoff_factor": 6.6,
-          "data_source": {
-            "type": "EFAS",
-            "longitude": 13.575, "latitude": 45.775,
-            "longitude_index": 1588, "latitude_index": 2329
-          },
-          "geometry": {
-            "mouth_longitude": 13.58104,
-            "mouth_latitude": 45.78084
-          },
-          "biogeochemical": { "profile": "adr_ion"}
-        },
-        {
-          "id": 64, "name": "Po",
-          "data_source": {
-            "type": "EFAS",
-            "longitude": 11.60833333, "latitude": 44.89166667,
-            "longitude_index": 1641, "latitude_index": 2211
-          },
-          "geometry": {
-            "mouth_longitude": 12.53661795302,
-            "mouth_latitude": 44.9671338460794,
-            "width": 1500, "depth": 6
-          },
-          "biogeochemical": {"profile": "adr_ion"}
-        },
-        {
-          "id": 78, "name": "Isonzo",
-          "data_source": {
-            "type": "EFAS",
-            "longitude": 13.54166667, "latitude": 45.725,
-            "longitude_index": 1591, "latitude_index": 2327
-          },
-          "geometry": {
-            "mouth_longitude": 13.5525677816984,
-            "mouth_latitude": 45.7256714098903
-          },
-          "biogeochemical": {"profile": "adr_ion"}
-        }
-      ]
-    }
-    """
-    tmp_path = Path(tmpdir_factory.mktemp("efas"))
-
-    efas_main_file = tmp_path / "main.json"
-    efas_main_file.write_text(main)
-
-    yield efas_main_file
-
-    shutil.rmtree(tmp_path)
-
-
-@pytest.fixture
-def efas_river_config():
-    """
-    An example of a river configuration file.
-    """
-    output = pd.DataFrame(
-        {
-            "id": [0, 1, 2, 3, 4],
-            "name": ["Foglia", "Reno + Lamone", "Po", "Adige", "Brenta"],
-            "mouth_longitude_index": [2289, 2251, 2211, 2254, 2248],
-            "mouth_latitude_index": [1699, 1659, 1641, 1625, 1623],
-            "mouth_longitude": [0.0, 1.0, 2.0, 3.0, 4.0],
-            "mouth_latitude": [4.0, 3.0, 2.0, 1.0, 0.0],
-        }
-    )
-    output.set_index(["id", "name"], inplace=True)
-    return output
-
-
-@pytest.fixture
-def efas_domain_file(test_data_dir):
-    """
-    Return a path to a file containing the EFAS domain.
-    """
-    return test_data_dir / "efas_domain.nc"
-
-
 @pytest.mark.external_resources
 def test_efas_domain_file_download(efas_domain_file, tmp_path):
     """
@@ -246,11 +145,6 @@ def test_efas_domain_file_download(efas_domain_file, tmp_path):
     assert np.allclose(
         reference_domain_file.longitude, generated_domain_file.longitude
     )
-
-
-def test_efas_read_config_from_json(river_config_json_example):
-    config_content = read_efas_config_file(river_config_json_example)
-    assert len(config_content.index.get_level_values("id")) == 4
 
 
 def test_historical_cdsapi_request_dump():
@@ -388,7 +282,7 @@ def test_download_yearly_data(year, tmp_path):
     assert requests[0]["time"] == ("00:00", "06:00", "12:00", "18:00")
 
 
-def test_read_efas_zipped_data(efas_river_config, efas_domain_file, tmp_path):
+def test_read_efas_zipped_data(config_example, efas_domain_file, tmp_path):
     """
     GIVEN a set of EFAS files,
     WHEN the function read_efas_data_files is called,
@@ -416,7 +310,7 @@ def test_read_efas_zipped_data(efas_river_config, efas_domain_file, tmp_path):
 
     test_dataset = read_efas_data_files(
         (test_file1, test_file2),
-        efas_river_config,
+        config_example,
         efas_domain_file=efas_domain_file,
     )
     output_dims = test_dataset.dis06.dims
@@ -425,12 +319,10 @@ def test_read_efas_zipped_data(efas_river_config, efas_domain_file, tmp_path):
 
     n_days = (end_date - start_date).days
     assert test_dataset.dis06.shape[0] == n_days * 4
-    assert test_dataset.dis06.shape[1] == len(efas_river_config)
+    assert test_dataset.dis06.shape[1] == len(config_example)
 
 
-def test_generate_efas_climatology(
-    efas_river_config, efas_domain_file, tmp_path
-):
+def test_generate_efas_climatology(config_example, efas_domain_file, tmp_path):
     """
     GIVEN a set of yearly EFAS files,
     WHEN the function generate_efas_climatology is called,
@@ -461,7 +353,7 @@ def test_generate_efas_climatology(
     clima_file = tmp_path / "clima.nc"
     generate_efas_climatology(
         clima_files,
-        efas_river_config,
+        config_example,
         clima_file,
         efas_domain_file=efas_domain_file,
     )
@@ -794,7 +686,7 @@ async def test_efas_operational_downloader_handles_exceptions(
 
 @pytest.mark.external_resources
 async def test_efas_operational_download_and_read(
-    settings, efas_river_config, efas_domain_file, tmp_path
+    settings, config_example, efas_domain_file, tmp_path
 ):
     """
     GIVEN a set of options for downloading some operational EFAS files,
@@ -819,7 +711,7 @@ async def test_efas_operational_download_and_read(
         start_date, end_date
     )
     efas_dataset = read_efas_data_files(
-        downloaded_files, efas_river_config, efas_domain_file=efas_domain_file
+        downloaded_files, config_example, efas_domain_file=efas_domain_file
     )
 
     assert "time" in efas_dataset.dims
@@ -840,7 +732,7 @@ async def test_efas_operational_download_and_read(
 )
 def test_efas_from_cdsapi_download_and_read(
     settings,
-    efas_river_config,
+    config_example,
     tmp_path,
     data_source: EfasDataSource,
     download_zipped: bool,
@@ -879,14 +771,14 @@ def test_efas_from_cdsapi_download_and_read(
         start_date=start_date,
         end_date=end_date,
         output_dir=tmp_path,
-        area=AreaSelection(west=11.0, south=43.0, east=13.0, north=45.5),
+        area=AreaSelection(west=7.0, south=43.0, east=11.0, north=45.5),
         cdsapi_client=cdsapi_client,
         download_format=download_format,
         file_data_format=data_format,
     )
 
     efas_dataset = read_efas_data_files(
-        downloaded_files, efas_river_config, efas_domain_file=efas_domain_file
+        downloaded_files, config_example, efas_domain_file=efas_domain_file
     )
     assert "time" in efas_dataset.dims
     assert "id" in efas_dataset.dims

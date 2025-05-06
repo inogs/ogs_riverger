@@ -1,9 +1,9 @@
-import os
-from pathlib import Path
-
 import pytest
 
-from ogs_riverger.settings import Settings
+from .fixtures import config_example  # noqa: F401
+from .fixtures import config_file_example  # noqa: F401
+from .fixtures import settings  # noqa: F401
+from .fixtures import test_data_dir  # noqa: F401
 
 
 def pytest_addoption(parser):
@@ -27,13 +27,3 @@ def pytest_collection_modifyitems(config, items):
             print(list(item.keywords))
             if "external_resources" in item.keywords:
                 item.add_marker(skipper)
-
-
-@pytest.fixture
-def test_data_dir():
-    return Path(os.path.dirname(__file__)) / "data"
-
-
-@pytest.fixture(scope="session")
-def settings():
-    return Settings()
