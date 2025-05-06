@@ -619,7 +619,9 @@ def _read_unzipped_efas_files(
     for file_path in input_files:
         # This file could be a grib or a NetCDF; luckily, xarray supports both
         logger.debug('Opening file "%s"', file_path)
-        with xr.open_dataset(file_path) as single_ds:
+        # We use Dask here (chunks={}) because it is way more efficient than
+        # standard xarray when executing the isel method
+        with xr.open_dataset(file_path, chunks={}) as single_ds:
             dataset_latitudes = single_ds.latitude.values
             dataset_longitudes = single_ds.longitude.values
 
@@ -655,13 +657,6 @@ def _read_unzipped_efas_files(
                 )
 
             logger.debug("Retrieving rivers' data from the map")
-            # NOTE: The following operation performs slowly due to Xarray's
-            # inefficient handling of isel operations on datasets read from
-            # disk. Performance can be significantly improved by adding
-            # ".load()" between single_ds and .isel, which loads the entire
-            # dataset into memory before selection. However, this optimization
-            # requires substantial RAM as it holds the complete dataset in
-            # memory at once.
             file_content = single_ds.isel(
                 longitude=lon_indices - i_lon1,
                 latitude=lat_indices - i_lat1,
