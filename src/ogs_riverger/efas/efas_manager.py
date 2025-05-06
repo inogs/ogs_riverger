@@ -619,56 +619,53 @@ def _read_unzipped_efas_files(
     for file_path in input_files:
         # This file could be a grib or a NetCDF; luckily, xarray supports both
         logger.debug('Opening file "%s"', file_path)
-        with xr.open_dataset(file_path) as f:
+        with xr.open_dataset(file_path) as single_ds:
+            dataset_latitudes = single_ds.latitude.values
+            dataset_longitudes = single_ds.longitude.values
 
-            def select_points(single_ds: xr.Dataset):
-                dataset_latitudes = single_ds.latitude.values
-                dataset_longitudes = single_ds.longitude.values
+            i_lat1, i_lat2 = _find_slice(domain_latitudes, dataset_latitudes)
+            i_lon1, i_lon2 = _find_slice(domain_longitudes, dataset_longitudes)
 
-                i_lat1, i_lat2 = _find_slice(
-                    domain_latitudes, dataset_latitudes
-                )
-                i_lon1, i_lon2 = _find_slice(
-                    domain_longitudes, dataset_longitudes
-                )
+            # Check that the position of the rivers is coherent with the
+            # domain of the file we have downloaded
+            outside_lat = np.logical_or(
+                lat_indices < i_lat1, lat_indices >= i_lat2
+            )
+            outside_lon = np.logical_or(
+                lon_indices < i_lon1, lon_indices >= i_lon2
+            )
+            if np.any(outside_lat) or np.any(outside_lon):
+                river_outside_index = np.nonzero(
+                    (outside_lon | outside_lat).values
+                )[0][0]
+                river_name = river_names[river_outside_index]
+                river_latitude = lat_indices.values[river_outside_index]
+                river_longitude = lon_indices.values[river_outside_index]
 
-                # Check that the position of the rivers is coherent with the
-                # domain of the file we have downloaded
-                outside_lat = np.logical_or(
-                    lat_indices < i_lat1, lat_indices >= i_lat2
-                )
-                outside_lon = np.logical_or(
-                    lon_indices < i_lon1, lon_indices >= i_lon2
-                )
-                if np.any(outside_lat) or np.any(outside_lon):
-                    river_outside_index = np.nonzero(
-                        (outside_lon | outside_lat).values
-                    )[0][0]
-                    river_name = river_names[river_outside_index]
-                    river_latitude = lat_indices.values[river_outside_index]
-                    river_longitude = lon_indices.values[river_outside_index]
-
-                    lat_sorted = np.sort(dataset_latitudes)
-                    lon_sorted = np.sort(dataset_longitudes)
-                    raise InvalidEfasFile(
-                        f'The domain of the file "{file_path}" (latitudes '
-                        f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
-                        f"and longitudes from {lon_sorted[0]:.3f} to "
-                        f"{lon_sorted[-1]:.3f}) does not contain the river "
-                        f'"{river_name}", whose mouth has latitude '
-                        f"{domain_latitudes[river_latitude]:.3f} and "
-                        f"longitude {domain_longitudes[river_longitude]:.3f}."
-                    )
-
-                return single_ds.isel(
-                    longitude=lon_indices - i_lon1,
-                    latitude=lat_indices - i_lat1,
+                lat_sorted = np.sort(dataset_latitudes)
+                lon_sorted = np.sort(dataset_longitudes)
+                raise InvalidEfasFile(
+                    f'The domain of the file "{file_path}" (latitudes '
+                    f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
+                    f"and longitudes from {lon_sorted[0]:.3f} to "
+                    f"{lon_sorted[-1]:.3f}) does not contain the river "
+                    f'"{river_name}", whose mouth has latitude '
+                    f"{domain_latitudes[river_latitude]:.3f} and "
+                    f"longitude {domain_longitudes[river_longitude]:.3f}."
                 )
 
-            # We want to reshape the content so that there is only one variable
-            # named discharge, and the two dimensions are the index of the
-            # river ("id") and the time step ("time")
-            file_content = select_points(f)
+            logger.debug("Retrieving rivers' data from the map")
+            # NOTE: The following operation performs slowly due to Xarray's
+            # inefficient handling of isel operations on datasets read from
+            # disk. Performance can be significantly improved by adding
+            # ".load()" between single_ds and .isel, which loads the entire
+            # dataset into memory before selection. However, this optimization
+            # requires substantial RAM as it holds the complete dataset in
+            # memory at once.
+            file_content = single_ds.isel(
+                longitude=lon_indices - i_lon1,
+                latitude=lat_indices - i_lat1,
+            ).load()
 
         # Remove the surface variable
         if "surface" in file_content:
