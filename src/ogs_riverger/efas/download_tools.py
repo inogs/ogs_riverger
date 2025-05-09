@@ -551,6 +551,22 @@ class EfasOperationalDownloader:
         if not data_dir.is_dir():
             raise IOError('Path "{}" is not a directory'.format(data_dir))
 
+        if cache is None:
+            efas_cache = {}
+            efas_dir = Path(data_dir)
+            if not efas_dir.exists():
+                raise IOError('Directory "{}" does not exist'.format(efas_dir))
+            if not efas_dir.is_dir():
+                raise IOError('Path "{}" is not a directory'.format(efas_dir))
+            for efas_file in efas_dir.iterdir():
+                if not efas_file.is_file():
+                    continue
+                file_stat = efas_file.stat()
+                file_size = file_stat.st_size
+                efas_cache[Path(efas_file)] = file_size
+        else:
+            efas_cache = dict(cache)
+
         self.data_dir = data_dir
         self._user = efas_user
         self._password = efas_password
@@ -558,7 +574,7 @@ class EfasOperationalDownloader:
         self._versions = tuple(versions)
         self._fallback = dict(fallback_versions) if fallback_versions else {}
         self._max_n_of_downloads = int(max_n_of_downloads)
-        self._cache = dict(cache) if cache else {}
+        self._cache = efas_cache
 
         self._semaphore = asyncio.Semaphore(self._max_n_of_downloads)
 
@@ -571,6 +587,7 @@ class EfasOperationalDownloader:
         versions: Iterable[str] = ("eud",),
         fallback_versions: Mapping[str, str] | None = None,
         max_n_of_downloads: int = 1,
+        cache: Mapping[Path, int] | None = None,
     ):
         """Asynchronous factory method for initializing an instance of this
         class.
@@ -578,18 +595,25 @@ class EfasOperationalDownloader:
         This method creates an object of the class while asynchronously
         populating the cache dictionary.
         """
-        efas_cache = {}
-        a_efas_dir = anyio.Path(efas_dir)
-        if not await a_efas_dir.exists():
-            raise IOError('Directory "{}" does not exist'.format(a_efas_dir))
-        if not await a_efas_dir.is_dir():
-            raise IOError('Path "{}" is not a directory'.format(a_efas_dir))
-        async for efas_file in a_efas_dir.iterdir():
-            if not await efas_file.is_file():
-                continue
-            file_stat = await efas_file.stat()
-            file_size = file_stat.st_size
-            efas_cache[Path(efas_file)] = file_size
+        if cache is None:
+            efas_cache = {}
+            a_efas_dir = anyio.Path(efas_dir)
+            if not await a_efas_dir.exists():
+                raise IOError(
+                    'Directory "{}" does not exist'.format(a_efas_dir)
+                )
+            if not await a_efas_dir.is_dir():
+                raise IOError(
+                    'Path "{}" is not a directory'.format(a_efas_dir)
+                )
+            async for efas_file in a_efas_dir.iterdir():
+                if not await efas_file.is_file():
+                    continue
+                file_stat = await efas_file.stat()
+                file_size = file_stat.st_size
+                efas_cache[Path(efas_file)] = file_size
+        else:
+            efas_cache = dict(cache)
 
         return cls(
             Path(efas_dir),
