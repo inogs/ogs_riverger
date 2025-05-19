@@ -662,7 +662,7 @@ class EfasOperationalDownloader:
                 - The first element is a boolean indicating whether the file
                   should be downloaded.
                 - The second element is the `Path` to the current position of
-                  the cached file (if exists) or `None`.
+                  the cached file (if it exists) or `None`.
         """
         logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
 
@@ -747,26 +747,46 @@ class EfasOperationalDownloader:
             }
         return available_files
 
-    async def _single_download(self, remote_file_path: Path) -> Path:
+    async def _single_download(
+        self, remote_file_path: Path, retries: int = 5
+    ) -> Path:
         """Downloads a single file from the remote server and saves it to the
         data directory.
 
         Args:
             remote_file_path: The path to the file on the remote server.
+            retries: If the download fails, how many attempts to retry.
 
         Returns:
             The local path of the downloaded file.
         """
         logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
         logger.info("Downloading file %s", remote_file_path)
-        async with self._semaphore:
-            async with aioftp.Client.context(
-                EFAS_FTP_URL,
-                port=EFAS_FTP_PORT,
-                user=self._user,
-                password=self._password.get_secret_value(),
-            ) as client:
-                await client.download(remote_file_path, self.data_dir)
+        for attempt in range(1, retries + 1):
+            try:
+                async with self._semaphore:
+                    async with aioftp.Client.context(
+                        EFAS_FTP_URL,
+                        port=EFAS_FTP_PORT,
+                        user=self._user,
+                        password=self._password.get_secret_value(),
+                        socket_timeout=30,
+                        connection_timeout=30,
+                    ) as client:
+                        await client.download(remote_file_path, self.data_dir)
+                break
+            except aioftp.errors.StatusCodeError as e:
+                if "425" in str(e) and attempt != retries:
+                    logger.warning(
+                        "Trying to download %s for the %d-th time due "
+                        "to 425 error in the previous download",
+                        attempt + 1,
+                        remote_file_path,
+                        exc_info=e,
+                    )
+                    await asyncio.sleep(attempt * 4)
+                    continue
+                raise
 
         output_path = self.data_dir / remote_file_path.name
         logger.info(
@@ -789,8 +809,8 @@ class EfasOperationalDownloader:
         server and not present in the local cache will be downloaded.
 
         Args:
-            start_time (datetime): The start of the time interval.
-            end_time (datetime): The end of the time interval.
+            start_time: The start of the time interval.
+            end_time: The end of the time interval.
         """
 
         logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")

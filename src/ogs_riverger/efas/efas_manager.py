@@ -186,7 +186,7 @@ def generate_efas_domain_file(output_file: PathLike) -> Path:
             )
         downloaded_file = downloaded_files[0]
 
-        with xr.open_dataset(downloaded_file) as ds:
+        with xr.open_dataset(downloaded_file, decode_timedelta=False) as ds:
             latitude = ds.latitude.values
             longitude = ds.longitude.values
 
@@ -620,8 +620,13 @@ def _read_unzipped_efas_files(
         # This file could be a grib or a NetCDF; luckily, xarray supports both
         logger.debug('Opening file "%s"', file_path)
         # We use Dask here (chunks={}) because it is way more efficient than
-        # standard xarray when executing the isel method
-        with xr.open_dataset(file_path, chunks={}) as single_ds:
+        # standard xarray when executing the isel method.
+        # By setting "decode_timedelta=True" we ensure that the values of the
+        # step variable are decoded as timedelta64 objects (and we also
+        # silence a warning)
+        with xr.open_dataset(
+            file_path, chunks={}, decode_timedelta=True
+        ) as single_ds:
             dataset_latitudes = single_ds.latitude.values
             dataset_longitudes = single_ds.longitude.values
 
