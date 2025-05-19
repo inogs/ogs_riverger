@@ -443,7 +443,7 @@ async def test_efas_operational_downloader_avoid_download_cached(
         cached_of_the_right_size = cached_files
 
     for cached_file in cached_of_the_right_size:
-        # Create a file with size `f_size`
+        # Create a file with the size `f_size`
         with open(cached_file, "b+w") as f:
             f.seek(f_size - 1)
             f.write(b"\0")
@@ -467,7 +467,7 @@ async def test_efas_operational_downloader_avoid_download_cached(
         start_time=datetime(2024, 11, 13), end_time=datetime(2024, 11, 18)
     )
 
-    # We expect to the dwd file to have been ignored and to return all the
+    # We expect the dwd file to have been ignored and to return all the
     # other files.
     n_expected_returned_files = len(test_files) - 1
     assert len(returned_files) == n_expected_returned_files
@@ -710,6 +710,7 @@ async def test_efas_operational_download_and_read(
     downloaded_files = await downloader.download_efas_operational_data(
         start_date, end_date
     )
+
     efas_dataset = read_efas_data_files(
         downloaded_files, config_example, efas_domain_file=efas_domain_file
     )
