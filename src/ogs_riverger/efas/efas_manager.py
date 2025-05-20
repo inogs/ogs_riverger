@@ -624,42 +624,51 @@ def _read_unzipped_efas_files(
         # By setting "decode_timedelta=True" we ensure that the values of the
         # step variable are decoded as timedelta64 objects (and we also
         # silence a warning)
-        with xr.open_dataset(
-            file_path, chunks={}, decode_timedelta=True
-        ) as single_ds:
-            dataset_latitudes = single_ds.latitude.values
-            dataset_longitudes = single_ds.longitude.values
+        try:
+            with xr.open_dataset(
+                file_path, chunks={}, decode_timedelta=True
+            ) as single_ds:
+                dataset_latitudes = single_ds.latitude.values
+                dataset_longitudes = single_ds.longitude.values
 
-            i_lat1, i_lat2 = _find_slice(domain_latitudes, dataset_latitudes)
-            i_lon1, i_lon2 = _find_slice(domain_longitudes, dataset_longitudes)
-
-            # Check that the position of the rivers is coherent with the
-            # domain of the file we have downloaded
-            outside_lat = np.logical_or(
-                lat_indices < i_lat1, lat_indices >= i_lat2
-            )
-            outside_lon = np.logical_or(
-                lon_indices < i_lon1, lon_indices >= i_lon2
-            )
-            if np.any(outside_lat) or np.any(outside_lon):
-                river_outside_index = np.nonzero(
-                    (outside_lon | outside_lat).values
-                )[0][0]
-                river_name = river_names[river_outside_index]
-                river_latitude = lat_indices.values[river_outside_index]
-                river_longitude = lon_indices.values[river_outside_index]
-
-                lat_sorted = np.sort(dataset_latitudes)
-                lon_sorted = np.sort(dataset_longitudes)
-                raise InvalidEfasFile(
-                    f'The domain of the file "{file_path}" (latitudes '
-                    f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
-                    f"and longitudes from {lon_sorted[0]:.3f} to "
-                    f"{lon_sorted[-1]:.3f}) does not contain the river "
-                    f'"{river_name}", whose mouth has latitude '
-                    f"{domain_latitudes[river_latitude]:.3f} and "
-                    f"longitude {domain_longitudes[river_longitude]:.3f}."
+                i_lat1, i_lat2 = _find_slice(
+                    domain_latitudes, dataset_latitudes
                 )
+                i_lon1, i_lon2 = _find_slice(
+                    domain_longitudes, dataset_longitudes
+                )
+
+                # Check that the position of the rivers is coherent with the
+                # domain of the file we have downloaded
+                outside_lat = np.logical_or(
+                    lat_indices < i_lat1, lat_indices >= i_lat2
+                )
+                outside_lon = np.logical_or(
+                    lon_indices < i_lon1, lon_indices >= i_lon2
+                )
+                if np.any(outside_lat) or np.any(outside_lon):
+                    river_outside_index = np.nonzero(
+                        (outside_lon | outside_lat).values
+                    )[0][0]
+                    river_name = river_names[river_outside_index]
+                    river_latitude = lat_indices.values[river_outside_index]
+                    river_longitude = lon_indices.values[river_outside_index]
+
+                    lat_sorted = np.sort(dataset_latitudes)
+                    lon_sorted = np.sort(dataset_longitudes)
+                    raise InvalidEfasFile(
+                        f'The domain of the file "{file_path}" (latitudes '
+                        f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
+                        f"and longitudes from {lon_sorted[0]:.3f} to "
+                        f"{lon_sorted[-1]:.3f}) does not contain the river "
+                        f'"{river_name}", whose mouth has latitude '
+                        f"{domain_latitudes[river_latitude]:.3f} and "
+                        f"longitude {domain_longitudes[river_longitude]:.3f}."
+                    )
+        except ValueError as e:
+            raise ValueError(
+                f"ValueError while trying to read file {file_path}"
+            ) from e
 
             logger.debug("Retrieving rivers' data from the map")
             file_content = single_ds.isel(
