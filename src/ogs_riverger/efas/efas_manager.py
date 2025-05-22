@@ -670,11 +670,11 @@ def _read_unzipped_efas_files(
                 f"ValueError while trying to read file {file_path}"
             ) from e
 
-            logger.debug("Retrieving rivers' data from the map")
-            file_content = single_ds.isel(
-                longitude=lon_indices - i_lon1,
-                latitude=lat_indices - i_lat1,
-            ).load()
+        logger.debug("Retrieving rivers' data from the map")
+        file_content = single_ds.isel(
+            longitude=lon_indices - i_lon1,
+            latitude=lat_indices - i_lat1,
+        ).load()
 
         # Remove the surface variable
         if "surface" in file_content:
