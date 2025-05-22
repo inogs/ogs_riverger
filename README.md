@@ -1,1 +1,1 @@
-# ogs_riverger
+# OGS Riverger
