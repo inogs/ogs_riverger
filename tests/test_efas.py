@@ -3,6 +3,7 @@ from datetime import timedelta
 from itertools import product as cart_prod
 from logging import getLogger
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -55,6 +56,8 @@ class EfasLikeFileGenerator:
     Writes a file with the same format of the ones downloaded from
     the EFAS archive.
     """
+
+    COMPRESSION = MappingProxyType({"zlib": True, "complevel": 4})
 
     def __init__(
         self,
@@ -118,7 +121,12 @@ class EfasLikeFileGenerator:
 
         dataset = xr.Dataset({"dis06": data})
         nc_path = self._tmp_path / "data_operational-version-5.nc"
-        dataset.to_netcdf(nc_path)
+        dataset.to_netcdf(
+            nc_path,
+            encoding={
+                v: EfasLikeFileGenerator.COMPRESSION for v in dataset.data_vars
+            },
+        )
 
         with ZipFile(output_file, "w") as zip_file:
             zip_file.write(nc_path, arcname=nc_path.name)
