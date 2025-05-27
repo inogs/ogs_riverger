@@ -353,11 +353,7 @@ def _read_single_efas_file(dataset: xr.Dataset) -> xr.Dataset:
         )
         return _read_efas_historical_file(dataset)
 
-    if (
-        "time" in dataset.coords
-        and "time" in dataset.coords
-        and "valid_time" in dataset.coords
-    ):
+    if "time" in dataset.coords and "valid_time" in dataset.coords:
         logger.debug(
             'The file has a coordinate named "time"; usually this means that '
             "is a GRIB historical file"
