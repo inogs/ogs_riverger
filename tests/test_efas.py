@@ -693,6 +693,19 @@ async def test_efas_operational_downloader_handles_exceptions(
 
 
 @pytest.mark.external_resources
+async def test_efas_operational_get_available_data_range(settings, tmp_path):
+    downloader = await EfasOperationalDownloader.create(
+        Path(tmp_path),
+        efas_user=settings.EFAS_FTP_USER,
+        efas_password=settings.EFAS_FTP_PASSWORD,
+        versions=("eud",),
+        fallback_versions={"eud": "dwd"},
+    )
+    data_min, data_max = await downloader.get_available_data_range()
+    assert data_max - data_min < timedelta(days=90)
+
+
+@pytest.mark.external_resources
 async def test_efas_operational_download_and_read(
     settings, config_example, efas_domain_file, tmp_path
 ):
