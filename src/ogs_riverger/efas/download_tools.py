@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import re
+import shutil
 from collections.abc import Iterable
 from collections.abc import Mapping
 from datetime import datetime
@@ -813,6 +814,9 @@ class EfasOperationalDownloader:
         logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
         logger.info("Downloading file %s", remote_file_path)
 
+        temp_path = self.data_dir / f"{remote_file_path.name}.tmp"
+        output_path = self.data_dir / remote_file_path.name
+
         for attempt in range(1, retries + 1):
             try:
                 async with self._semaphore:
@@ -824,7 +828,9 @@ class EfasOperationalDownloader:
                         socket_timeout=30,
                         connection_timeout=30,
                     ) as client:
-                        await client.download(remote_file_path, self.data_dir)
+                        await client.download(
+                            remote_file_path, temp_path, write_into=True
+                        )
                 break
             except aioftp.errors.StatusCodeError as e:
                 if "425" in str(e) and attempt != retries:
@@ -838,8 +844,8 @@ class EfasOperationalDownloader:
                     await asyncio.sleep(attempt * 4)
                     continue
                 raise
+        shutil.move(temp_path, output_path)
 
-        output_path = self.data_dir / remote_file_path.name
         logger.info(
             "Download of file %s into %s completed",
             remote_file_path,
