@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import re
 from collections.abc import Iterable
 from collections.abc import Mapping
 from datetime import datetime
@@ -272,7 +273,7 @@ def download_from_cdsapi(
     """Downloads data from the CDSAPI EFAS archives (forecast or historical).
 
     Due to limitations in the `cdsapi` interface, this function may
-    need to  download multiple files. For example, if the `start_date`
+    need to download multiple files. For example, if the `start_date`
     and `end_date` span different months, a separate file for each
     month must be downloaded.
 
@@ -536,6 +537,53 @@ class EfasOperationalDownloader:
         sizes.
     """
 
+    FILE_NAME_MASK = re.compile(
+        r"^(?P<version>[a-z0-9]+)\.fc\.dis_(?P<date>\d{10})\.grb$"
+    )
+
+    @staticmethod
+    def _generate_file_name(version: str, file_date: datetime) -> str:
+        """
+        Generates the expected file name for a EFAS file based on the given
+        file version and date of production.
+
+        Args:
+            version: A string representing the version identifier of the file.
+            file_date: A `datetime` object representing the date and time
+                information of when the file has been produced.
+
+        Returns:
+            A string containing the generated file name in the format
+            "{version}.fc.dis_{YYYYMMDDHH}.grb".
+        """
+        time_str = file_date.strftime("%Y%m%d%H")
+        return f"{version}.fc.dis_{time_str}.grb"
+
+    @staticmethod
+    def _check_file_name(file_name: str) -> dict[str : str | datetime] | None:
+        """
+        Checks if a file name is conformal to the typical file name of the EFAS
+        operative files. If this is the case, it returns a dictionary
+        containing the name and the date of production. Otherwise, it returns
+        `None`
+
+        Args:
+            file_name: the name of the file
+
+        Returns:
+            A dictionary with the version and the production date of the
+            file if the name of the file is conformal to the typical file name
+            of the EFAS operative service. Otherwise, it returns `None`.
+        """
+        file_match = EfasOperationalDownloader.FILE_NAME_MASK.match(file_name)
+        if file_match is None:
+            return None
+        output = {
+            "version": file_match.group("version"),
+            "date": datetime.strptime(file_match.group("date"), "%Y%m%d%H"),
+        }
+        return output
+
     def __init__(
         self,
         data_dir: Path,
@@ -560,6 +608,8 @@ class EfasOperationalDownloader:
                 raise IOError('Path "{}" is not a directory'.format(efas_dir))
             for efas_file in efas_dir.iterdir():
                 if not efas_file.is_file():
+                    continue
+                if self._check_file_name(efas_file.name) is None:
                     continue
                 file_stat = efas_file.stat()
                 file_size = file_stat.st_size
@@ -762,6 +812,7 @@ class EfasOperationalDownloader:
         """
         logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
         logger.info("Downloading file %s", remote_file_path)
+
         for attempt in range(1, retries + 1):
             try:
                 async with self._semaphore:
@@ -795,6 +846,48 @@ class EfasOperationalDownloader:
             output_path,
         )
         return output_path
+
+    async def get_available_data_range(self) -> tuple[datetime, datetime]:
+        """
+        Retrieve the range of dates available on the remote server.
+
+        This method connects to the remote server, fetches the list of
+        available files, and determines the minimum and maximum
+        dates present in the valid filenames. Files with non-conforming
+        filenames are discarded, and if no valid file is present, an exception
+        is raised.
+
+        Returns:
+            A tuple containing the earliest and latest dates found in the
+            valid filenames from the remote server
+
+        Raises:
+            RuntimeError: If no valid files are available on the remote
+                          server
+        """
+        logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
+
+        available_files = await self._get_remote_server_available_files()
+        logger.debug(
+            "%s files found on the remote server", len(available_files)
+        )
+
+        dates = []
+        for file_name in available_files:
+            file_name_check = self._check_file_name(file_name)
+            if file_name_check is None:
+                logger.debug(
+                    "File %s has been discarded because its name it not"
+                    "conformal",
+                    file_name,
+                )
+                continue
+            dates.append(file_name_check["date"])
+        if len(dates) == 0:
+            raise RuntimeError(
+                "No files available on the remote EFAS FTP server"
+            )
+        return min(dates), max(dates)
 
     async def download_efas_operational_data(
         self,
@@ -848,9 +941,10 @@ class EfasOperationalDownloader:
         returned_files = set()
         files_to_be_downloaded = set()
         for time_step in time_steps:
-            time_str = time_step.strftime("%Y%m%d%H")
             for version in self._versions:
-                expected_file_name = f"{version}.fc.dis_{time_str}.grb"
+                expected_file_name = self._generate_file_name(
+                    version, time_step
+                )
                 logger.debug(
                     "Checking if a file named %s exists", expected_file_name
                 )
@@ -865,8 +959,8 @@ class EfasOperationalDownloader:
 
                 if cache_position is None and version in self._fallback:
                     fallback_version = self._fallback[version]
-                    fallback_file_name = (
-                        f"{fallback_version}.fc.dis_{time_str}.grb"
+                    fallback_file_name = self._generate_file_name(
+                        fallback_version, time_step
                     )
                     logger.debug(
                         "Trying the fallback version %s: checking for file %s",
@@ -895,14 +989,14 @@ class EfasOperationalDownloader:
                             "time-step %s",
                             expected_file_name,
                             fallback_file_name,
-                            time_str,
+                            time_step.strftime("%Y/%m/%d-%H:%M:%s"),
                         )
                 elif cache_position is None:
                     logger.debug(
                         "There is not fallback version for %s; no file will "
                         "be downloaded for time-step %s",
                         version,
-                        time_str,
+                        time_step.strftime("%Y/%m/%d-%H:%M:%S"),
                     )
                 else:
                     returned_files.add(cache_position)

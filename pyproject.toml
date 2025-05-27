@@ -53,6 +53,12 @@ markers = [
 riverger = "ogs_riverger.__main__:main"
 
 
+[tool.flake8]
+max-line-length = 79
+max-complexity = 14
+ignore = ["E203"]
+
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
