@@ -3,12 +3,15 @@ import inspect
 import logging
 import re
 import shutil
+from collections.abc import Container
 from collections.abc import Iterable
 from collections.abc import Mapping
 from datetime import datetime
 from datetime import time
 from datetime import timedelta
+from datetime import timezone
 from enum import Enum
+from itertools import product as cart_prod
 from os import PathLike
 from pathlib import Path
 from typing import Annotated
@@ -23,6 +26,7 @@ from pydantic import PlainSerializer
 from pydantic import SecretStr
 
 from ogs_riverger.utils.area_selection import AreaSelection
+from ogs_riverger.utils.datetime_utils import check_all_timezone_awareness
 
 
 EFAS_FTP_URL = "aux.ecmwf.int"
@@ -270,6 +274,7 @@ def download_from_cdsapi(
     file_data_format: EfasCEMSDataFormat = EfasCEMSDataFormat.NETCDF,
     output_file_mask: str = "efas_{SERVICE}_{DATE}.{FORMAT}{IS_ZIP}",
     date_format: str = "{YEAR}_{MONTH:02d}_{START_DAY:02d}-{END_DAY:02d}",
+    skip: Container[str] | None = None,
 ) -> tuple[Path, ...]:
     """Downloads data from the CDSAPI EFAS archives (forecast or historical).
 
@@ -311,8 +316,16 @@ def download_from_cdsapi(
             - {START_DAY} is the start day of the file
             - {END_DAY} is the end day of the file
 
+        skip: list of file names that should not be downloaded. If one of the
+            files that must be downloaded by this function has a name
+            contained inside the skip object, this function will skip the
+            download of that file. For example, you may want to skip the
+            download of a file that has already been downloaded.
+
     Returns:
-        A tuple with the paths of all the files that have been downloaded
+        A tuple with the paths of all the files that have been downloaded. If
+        a file has been skipped because its name was in the `skip` list, its
+        name will not be returned by this function.
 
     Raises:
         ValueError: the output directory does not exist or is not a directory.
@@ -346,76 +359,82 @@ def download_from_cdsapi(
     one_day = timedelta(days=1)
 
     retrieve_args = []
-    for year in years:
-        for month in range(1, 13):
-            start_month_date = datetime(year, month, 1)
-            if month != 12:
-                end_month_date = datetime(year, month + 1, 1) - one_day
-            else:
-                end_month_date = datetime(year + 1, 1, 1) - one_day
+    for year, month in cart_prod(years, range(1, 13)):
+        start_month_date = datetime(year, month, 1)
+        if month != 12:
+            end_month_date = datetime(year, month + 1, 1) - one_day
+        else:
+            end_month_date = datetime(year + 1, 1, 1) - one_day
 
-            if start_month_date > end_date:
-                logger.debug(
-                    "Month %s of year %s will not be downloaded because it is "
-                    "after the end_date (%s)",
-                    month,
-                    year,
-                    end_date,
-                )
-                continue
-            if end_month_date < start_date:
-                logger.debug(
-                    "Month %s of year %s will not be downloaded because it is "
-                    "before the start_date (%s)",
-                    month,
-                    year,
-                    start_date,
-                )
-                continue
-
+        if start_month_date > end_date:
             logger.debug(
-                "Preparing request for month %s of year %s", month, year
+                "Month %s of year %s will not be downloaded because it is "
+                "after the end_date (%s)",
+                month,
+                year,
+                end_date,
             )
-
-            start_month_date = max(start_date, start_month_date)
-            end_month_date = min(end_date, end_month_date)
-
-            start_day = start_month_date.day
-            end_day = end_month_date.day
-            is_zip_str = ""
-            if download_format is EfasCEMSDownloadFormat.ZIP:
-                is_zip_str = ".zip"
-            file_date_str = date_format.format(
-                YEAR=year,
-                MONTH=month,
-                START_DAY=start_day,
-                END_DAY=end_day,
+            continue
+        if end_month_date < start_date:
+            logger.debug(
+                "Month %s of year %s will not be downloaded because it is "
+                "before the start_date (%s)",
+                month,
+                year,
+                start_date,
             )
-            output_file_name = output_file_mask.format(
-                SERVICE=service.value,
-                DATE=file_date_str,
-                FORMAT=file_data_format.value,
-                IS_ZIP=is_zip_str,
-            )
-            output_file_path = output_dir / output_file_name
+            continue
 
-            days = tuple(range(start_day, end_day + 1))
+        logger.debug("Preparing request for month %s of year %s", month, year)
 
-            request = request_class(
-                year=(year,),
-                month=(month,),
-                day=days,
-                area=area,
-                data_format=file_data_format,
-                download_format=download_format,
-            )
+        start_month_date = max(start_date, start_month_date)
+        end_month_date = min(end_date, end_month_date)
 
-            retrieve_args.append(
-                (f"efas-{service.value}", request, output_file_path)
+        start_day = start_month_date.day
+        end_day = end_month_date.day
+        is_zip_str = ""
+        if download_format is EfasCEMSDownloadFormat.ZIP:
+            is_zip_str = ".zip"
+        file_date_str = date_format.format(
+            YEAR=year,
+            MONTH=month,
+            START_DAY=start_day,
+            END_DAY=end_day,
+        )
+        output_file_name = output_file_mask.format(
+            SERVICE=service.value,
+            DATE=file_date_str,
+            FORMAT=file_data_format.value,
+            IS_ZIP=is_zip_str,
+        )
+        if skip is not None and output_file_name in skip:
+            logger.debug(
+                "Skipping download of file %s because it was in the skip list",
+                output_file_name,
             )
+            continue
+        output_file_path = output_dir / output_file_name
+
+        days = tuple(range(start_day, end_day + 1))
+
+        request = request_class(
+            year=(year,),
+            month=(month,),
+            day=days,
+            area=area,
+            data_format=file_data_format,
+            download_format=download_format,
+        )
+
+        retrieve_args.append(
+            (f"efas-{service.value}", request, output_file_path)
+        )
 
     def download_file(retrieve_arg):
         _request_name, _request, _output_file_path = retrieve_arg
+        temp_file_path = (
+            _output_file_path.parent / f"{_output_file_path.name}.temp"
+        )
         logger.debug(
             "Downloading file %s using the following request: %s",
             _output_file_path,
@@ -424,10 +443,11 @@ def download_from_cdsapi(
         cdsapi_client.retrieve(
             _request_name,
             _request.dump(),
-            _output_file_path,
+            temp_file_path,
         )
+        shutil.move(temp_file_path, _output_file_path)
         logger.debug("File %s has been downloaded", _output_file_path)
-        return output_file_path
+        return _output_file_path
 
     saved_files = map(download_file, retrieve_args)
 
@@ -851,6 +871,19 @@ class EfasOperationalDownloader:
             remote_file_path,
             output_path,
         )
+
+        # Add the file into the cache
+        try:
+            output_path_async = anyio.Path(output_path)
+            file_stat = await output_path_async.stat()
+            file_size = file_stat.st_size
+            self._cache[output_path] = file_size
+        except Exception:
+            logger.exception(
+                "Failed to add file %s into the cache", output_path
+            )
+            raise
+
         return output_path
 
     async def get_available_data_range(self) -> tuple[datetime, datetime]:
@@ -899,7 +932,7 @@ class EfasOperationalDownloader:
         self,
         start_time: datetime,
         end_time: datetime,
-    ) -> list[Path]:
+    ) -> tuple[Path, ...]:
         """Downloads all files from the FTP server for a specified time
         interval.
 
@@ -1030,4 +1063,129 @@ class EfasOperationalDownloader:
             else:
                 returned_files.add(file_local_download)
 
-        return sorted(list(returned_files))
+        return tuple(sorted(list(returned_files)))
+
+
+class EfasArchiveDownloader:
+    FILE_NAME_MASK = re.compile(
+        r"^efas_(?P<service>[a-zA-Z0-9]+)_(?P<DATE>\d{4}_\d{2}_\d{2}-\d{2})"
+        r"\.netcdf\.zip$"
+    )
+    OUTPUT_FILE_MASK: str = "efas_{SERVICE}_{DATE}.{FORMAT}{IS_ZIP}"
+    FILE_DATA_FORMAT: str = "{YEAR}_{MONTH:02d}_{START_DAY:02d}-{END_DAY:02d}"
+
+    def __init__(
+        self,
+        data_dir: Path,
+        service: EfasDataSource = EfasDataSource.HISTORICAL,
+        area: AreaSelection | None = None,
+        cache: Iterable[Path] | None = None,
+        cdsapi_client: cdsapi.Client | None = None,
+    ):
+        self.data_dir = data_dir
+        self.service = service
+        self.area = area
+
+        if cdsapi_client is None:
+            self._cdsapi_client = get_cdsapi_client()
+        else:
+            self._cdsapi_client = cdsapi_client
+
+        if cache is None:
+            cache = self.data_dir.iterdir()
+
+        self._cache: set[Path] = set()
+        for file_path in cache:
+            if not self.FILE_NAME_MASK.match(file_path.name):
+                continue
+            self._cache.add(file_path)
+
+    @staticmethod
+    def _get_file_start_end_dates(file_name: str) -> tuple[datetime, datetime]:
+        """Extracts the start and end dates from a file name."""
+        f_match = EfasArchiveDownloader.FILE_NAME_MASK.match(file_name)
+
+        f_date = f_match.group("DATE")
+        f_date_start, f_date_end_day = f_date.split("-")
+        f_date_start = datetime.strptime(f_date_start, "%Y_%m_%d")
+        f_date_end_day = int(f_date_end_day)
+
+        f_date_end = datetime(
+            year=f_date_start.year,
+            month=f_date_start.month,
+            day=f_date_end_day,
+        )
+        return f_date_start, f_date_end
+
+    def download_efas_archived_files(
+        self, start_time: datetime, end_time: datetime
+    ) -> tuple[Path, ...]:
+        logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
+
+        timezone_aware = check_all_timezone_awareness(start_time, end_time)
+        logger.debug(
+            "The datetime objects are timezone%s",
+            "-aware" if timezone_aware else " naive",
+        )
+
+        already_downloaded: set[Path] = set()
+        for f in self._cache:
+            logger.debug(
+                "Checking if file %s saved in cache is useful for the request",
+                f,
+            )
+            f_match = self.FILE_NAME_MASK.match(f.name)
+            if f_match is None:
+                logger.warning(
+                    "There is a file into this %s cache that is not "
+                    "conformal to the expected file mask: %s",
+                    self.__class__.__name__,
+                    f,
+                )
+                continue
+
+            file_start_date, file_end_date = self._get_file_start_end_dates(
+                f.name
+            )
+
+            if timezone_aware:
+                file_start_date = file_start_date.replace(tzinfo=timezone.utc)
+                file_end_date = file_end_date.replace(tzinfo=timezone.utc)
+
+            if file_start_date > end_time:
+                logger.debug(
+                    "File %s is not useful because it is too recent", f.name
+                )
+                continue
+            if file_end_date < start_time:
+                logger.debug(
+                    "File %s is not useful because it is too old", f.name
+                )
+                continue
+
+            logger.debug("File %s will be inserted inside the cache")
+            already_downloaded.add(f)
+
+        logger.debug(
+            "%s files will be provided by the cache", len(already_downloaded)
+        )
+
+        downloaded_files = download_from_cdsapi(
+            self.service,
+            start_time,
+            end_time,
+            self.data_dir,
+            area=self.area,
+            cdsapi_client=self._cdsapi_client,
+            download_format=EfasCEMSDownloadFormat.ZIP,
+            file_data_format=EfasCEMSDataFormat.NETCDF,
+            output_file_mask=self.OUTPUT_FILE_MASK,
+            date_format=self.FILE_DATA_FORMAT,
+            skip=set(f.name for f in already_downloaded),
+        )
+
+        for d_file in downloaded_files:
+            self._cache.add(d_file)
+
+        useful_files = downloaded_files + tuple(already_downloaded)
+        return tuple(sorted(useful_files))
