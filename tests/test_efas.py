@@ -5,17 +5,20 @@ from logging import getLogger
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 from zipfile import ZipFile
 
 import numpy as np
 import pytest
 import xarray as xr
+from cdsapi import Client
 from pydantic import SecretStr
 
 from ogs_riverger.efas.download_tools import AreaSelection
 from ogs_riverger.efas.download_tools import download_from_cdsapi
 from ogs_riverger.efas.download_tools import download_yearly_data_from_cdsapi
+from ogs_riverger.efas.download_tools import EfasArchiveDownloader
 from ogs_riverger.efas.download_tools import EfasCEMSDataFormat
 from ogs_riverger.efas.download_tools import EfasCEMSDownloadFormat
 from ogs_riverger.efas.download_tools import EfasDataSource
@@ -27,20 +30,21 @@ from ogs_riverger.efas.efas_manager import generate_efas_domain_file
 from ogs_riverger.efas.efas_manager import read_efas_data_files
 
 
-class CDSClientMock:
-    """
-    A mock that simulates the interface of `cdsapi.Client`, storing the
-    requests that would have been made to the API.
-    """
+def create_cds_client_mock():
+    """Creates a Mock that simulates the interface of `cdsapi.Client`."""
+    mock = Mock(spec=Client)
+    mock.requests = []
 
-    def __init__(self):
-        self._requests = []
+    def retrieve_side_effect(name: str, request, output_file):
+        output_file.touch()
+        mock.requests.append(request)
 
-    def retrieve(self, name: str, request, output_file) -> None:
-        self._requests.append(request)
+    def get_requests():
+        return tuple(mock.requests)
 
-    def get_requests(self) -> tuple[dict, ...]:
-        return tuple(self._requests)
+    mock.retrieve.side_effect = retrieve_side_effect
+    mock.get_requests = get_requests
+    return mock
 
 
 @pytest.fixture
@@ -188,7 +192,7 @@ def test_download_forecast_data_single_month(year, month, n_days, tmp_path):
     else:
         end_date = datetime(year, month + 1, 1) - timedelta(days=1)
 
-    client = CDSClientMock()
+    client = create_cds_client_mock()
     area = AreaSelection(north=1, west=2, south=3, east=4)
 
     # noinspection PyTypeChecker
@@ -228,10 +232,9 @@ def test_download_forecast_data_two_months(tmp_path):
     start_date = datetime(2024, 3, 12)
     end_date = datetime(2024, 4, 18)
 
-    client = CDSClientMock()
+    client = create_cds_client_mock()
     area = AreaSelection(north=1, west=2, south=3, east=4)
 
-    # noinspection PyTypeChecker
     download_from_cdsapi(
         EfasDataSource.FORECAST,
         start_date,
@@ -259,10 +262,9 @@ def test_download_yearly_data(year, tmp_path):
     WHEN the function is executed,
     THEN the function downloads the data using the correct cdsapi request.
     """
-    client = CDSClientMock()
+    client = create_cds_client_mock()
     area = AreaSelection(north=1, west=2, south=3, east=4)
 
-    # noinspection PyTypeChecker
     download_yearly_data_from_cdsapi(
         EfasDataSource.HISTORICAL,
         year=year,
@@ -808,3 +810,91 @@ def test_efas_from_cdsapi_download_and_read(
 
     assert "time" in efas_dataset.coords
     assert "dis06" in efas_dataset.variables
+
+
+def test_efas_archive_downloader(tmp_path):
+    client = create_cds_client_mock()
+    area = AreaSelection(north=1, west=2, south=3, east=4)
+
+    downloader = EfasArchiveDownloader(
+        data_dir=tmp_path,
+        service=EfasDataSource.HISTORICAL,
+        area=area,
+        cdsapi_client=client,
+    )
+
+    start_time = datetime(2023, 10, 18)
+    end_time = datetime(2024, 11, 14)
+    n_files = 14
+
+    downloaded_files = downloader.download_efas_archived_files(
+        start_time=start_time, end_time=end_time
+    )
+
+    assert len(downloaded_files) == n_files
+
+
+def test_efas_archive_downloader_uses_cache(tmp_path):
+    client = create_cds_client_mock()
+
+    downloader = EfasArchiveDownloader(
+        data_dir=tmp_path,
+        service=EfasDataSource.HISTORICAL,
+        cdsapi_client=client,
+    )
+
+    start_time = datetime(2023, 10, 18)
+    end_time = datetime(2024, 2, 8)
+
+    downloader.download_efas_archived_files(
+        start_time=start_time, end_time=end_time
+    )
+    # We performed 5 downloads, one for each month
+    assert client.retrieve.call_count == 5
+
+    new_end_time = datetime(2024, 3, 1)
+    downloaded_files = downloader.download_efas_archived_files(
+        start_time=start_time, end_time=new_end_time
+    )
+
+    # 6 files, from October 2023 to March 2024
+    assert len(downloaded_files) == 7
+
+    # Besides the 5 files from the previous call, we download again february,
+    # and we download the first day of March
+    assert client.retrieve.call_count == 7
+
+
+def test_efas_archive_downloader_generates_the_cache_when_built(tmp_path):
+    client1 = create_cds_client_mock()
+
+    downloader1 = EfasArchiveDownloader(
+        data_dir=tmp_path,
+        service=EfasDataSource.HISTORICAL,
+        cdsapi_client=client1,
+    )
+
+    start_time = datetime(2023, 10, 18)
+    end_time = datetime(2024, 2, 8)
+
+    downloader1.download_efas_archived_files(
+        start_time=start_time, end_time=end_time
+    )
+
+    client2 = create_cds_client_mock()
+    downloader2 = EfasArchiveDownloader(
+        data_dir=tmp_path,
+        service=EfasDataSource.HISTORICAL,
+        cdsapi_client=client2,
+    )
+
+    new_end_time = datetime(2024, 3, 1)
+    downloaded_files = downloader2.download_efas_archived_files(
+        start_time=start_time, end_time=new_end_time
+    )
+
+    # 6 files, from October 2023 to March 2024
+    assert len(downloaded_files) == 7
+
+    # We download again february, and we download the first day of March
+    assert client2.retrieve.call_count == 2
