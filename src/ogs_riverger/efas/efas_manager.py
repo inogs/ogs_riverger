@@ -3,6 +3,7 @@ import logging
 from collections.abc import Iterable
 from contextlib import ExitStack
 from datetime import datetime
+from functools import partial
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -209,8 +210,7 @@ def read_efas_data_files(
     compressed inside some zip archives.
 
     The function reads the different kinds of files, merges them,
-    applies the runoff factor described in the CSV configuration file (if
-    not specified otherwise), and returns an xArray dataset.
+    and returns an xArray dataset.
 
     Args:
         input_files: An iterable of paths to the input files
@@ -227,87 +227,256 @@ def read_efas_data_files(
         It also contains a one-dimensional variable named "computation_date"
         that contains the date of the computation.
     """
-    # This function is just a wrapper that decompresses the (optionally)
-    # zipped files and calls _read_unzipped_efas_files
     logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
 
-    # Is there any zip file?
-    zip_files = len([f for f in input_files if f.suffix.lower() == ".zip"]) > 0
-    if not zip_files:
-        logger.debug(
-            "No zip files found in the list of files that must be read; "
-            "they will be read as they are: %s",
-            zip_files,
-        )
-        return _read_unzipped_efas_files(
-            input_files,
-            config_content,
-            efas_domain_file,
-        )
+    logger.debug("Reading the EFAS domain file")
+    efas_domain = xr.load_dataset(efas_domain_file)
 
-    logger.debug(
-        "Some EFAS files are zipped and must be decompressed before being "
-        "read."
-    )
-    uncompressed_files = []
+    # Create a temporary directory to store the unzipped files
     with TemporaryDirectory() as t:
-        t = Path(t)
-        logger.debug("Temporary directory %s will be used", t)
+        logger.debug("Creating temporary directory %s", t)
 
-        for f in input_files:
-            if f.suffix.lower() != ".zip":
-                logger.debug(
-                    "File %s will be read as is (already uncompressed)", f
-                )
-                uncompressed_files.append(f)
-                continue
+        elaborate_file = partial(
+            _read_single_efas_file,
+            config_content=config_content,
+            efas_domain=efas_domain,
+            temp_dir=Path(t),
+        )
+        datasets = map(elaborate_file, input_files)
 
-            decompressed_dir = t / (f.stem + "___" + uuid1().hex)
-            decompressed_dir.mkdir(parents=False, exist_ok=False)
-            logger.debug("Decompressing file %s into %s", f, decompressed_dir)
-            with ZipFile(f, "r") as zip_ref:
-                zip_ref.extractall(decompressed_dir)
-                if len(zip_ref.namelist()) > 1:
-                    raise ValueError(
-                        f"The zip file {f} contains more than one file; "
-                        "only one file is expected"
-                    )
-                if len(zip_ref.namelist()) == 0:
-                    raise ValueError(
-                        f"The zip file {f} does not contain any file"
-                    )
-                data_file_name = zip_ref.namelist()[0]
-                zip_ref.extract(data_file_name, decompressed_dir)
-                decompressed_data_file = decompressed_dir / data_file_name
-                logger.debug(
-                    "File %s has been decompressed into %s",
-                    f,
-                    decompressed_data_file,
-                )
-                uncompressed_files.append(decompressed_data_file)
+        logger.debug("Concatenating the datasets...")
+        concat_dataset = xr.concat(datasets, dim="time")
+        logger.debug("All EFAS files have been read")
+    logger.debug("Directory %s has been deleted", t)
 
-        output_data = _read_unzipped_efas_files(
-            uncompressed_files,
-            config_content,
-            efas_domain_file,
+    # Inside the EFAS files, we could have multiple forecasts for the same
+    # time of the model (because they have been produced on different runs).
+    # Here we select only the most reliable forecast (the one that is closest
+    # to the computation date)
+    logger.debug("Getting the best forecast (if needed)")
+    _, slicing_indices = _get_best_unique_element(
+        concat_dataset.time.values, concat_dataset.computation_date.values
+    )
+
+    efas_data = concat_dataset.isel(time=slicing_indices)
+
+    return efas_data
+
+
+def _read_raw_content_of_efas_file(
+    file_path: Path,
+    config_content: Iterable[RiverConfigElement],
+    efas_domain: xr.Dataset,
+    temp_dir: Path,
+) -> xr.Dataset:
+    """
+    Reads the raw content of an EFAS file.
+
+    This function processes a given EFAS file, either zipped or unzipped,
+    and extracts its content into a usable xarray.Dataset format.
+    If the input file is a zip file, it ensures that it contains exactly one
+    file, extracts it into a temporary directory, and processes the extracted
+    file's content. If the file is not zipped, it directly processes the
+    content as it is.
+
+    This function returns the raw content of the EFAS file in xarray.Dataset;
+    the only operation performed on the raw content is the selection of the
+    rivers' data (i.e., we select only the cells where there is a mouth of a
+    river).
+
+    Args:
+        file_path: Path to the EFAS file to be read. It can be either a zipped
+            file containing one item or an unzipped data file.
+        config_content: Iterable containing the EFAS file configuration
+            elements. Each element describes the river to be considered and
+            the coordinates of its mouth.
+        efas_domain: The dataset stored into the file containing
+            the coordinates of the efas domain.
+        temp_dir: Path to the directory where temporary files or
+            decompressed directories will be created during the execution.
+
+    Returns:
+        Parsed data from the EFAS file in xarray.Dataset format.
+    """
+    logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
+
+    if not file_path.suffix.lower() == ".zip":
+        logger.debug("File %s is not zipped; it will be read as is", file_path)
+        return _read_raw_content_of_unzipped_efas_file(
+            file_path, config_content, efas_domain
         )
 
-    logger.debug("Directory %s has been deleted", t)
-    return output_data
+    decompressed_dir = temp_dir / (file_path.stem + "___" + uuid1().hex)
+    decompressed_dir.mkdir(parents=False, exist_ok=False)
+    logger.debug(
+        "File %s will be unzipped zipped into directory %s",
+        file_path,
+        decompressed_dir,
+    )
+    with ZipFile(file_path, "r") as zip_ref:
+        zip_ref.extractall(decompressed_dir)
+        if len(zip_ref.namelist()) > 1:
+            raise ValueError(
+                f"The zip file {file_path} contains more than one file; "
+                "only one file is expected"
+            )
+        if len(zip_ref.namelist()) == 0:
+            raise ValueError(
+                f"The zip file {file_path} does not contain any file"
+            )
+        data_file_name = zip_ref.namelist()[0]
+        zip_ref.extract(data_file_name, decompressed_dir)
+        decompressed_data_file = decompressed_dir / data_file_name
+    logger.debug(
+        "File %s that was stored inside %s has been decompressed into %s",
+        data_file_name,
+        file_path,
+        decompressed_data_file,
+    )
+    return _read_raw_content_of_unzipped_efas_file(
+        decompressed_data_file, config_content, efas_domain
+    )
 
 
-def _read_single_efas_file(dataset: xr.Dataset) -> xr.Dataset:
+def _read_raw_content_of_unzipped_efas_file(
+    file_path: Path,
+    config_content: Iterable[RiverConfigElement],
+    efas_domain: xr.Dataset,
+) -> xr.Dataset:
+    """
+    Reads and processes the raw content of an unzipped EFAS file to extract
+    specific river data based on given configurations and EFAS domain.
+
+    The function opens the specified file (which may be in GRIB or NetCDF
+    format) using Xarray and extracts river data by indexing latitude and
+    longitude positions. It validates that river positions are within the
+    domain of the file and reads and loads the corresponding data from the
+    dataset.
+
+    Args:
+        file_path: The file path to the unzipped EFAS data file.
+        config_content: An iterable containing river configuration elements,
+            filtered for EFAS source type.
+        efas_domain: The dataset representing the EFAS domain, containing
+            latitude and longitude values.
+
+    Returns:
+        The dataset containing the river data extracted and indexed based
+        on the configuration and EFAS domain.
+
+    Raises:
+        InvalidEfasFile: If the domain of the file does not contain certain
+            rivers specified in the configuration.
+    """
+    logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
+
+    domain_latitudes = efas_domain.latitude.values
+    domain_longitudes = efas_domain.longitude.values
+
+    river_configs = tuple(
+        c for c in config_content if c.data_source.type == "EFAS"
+    )
+    n_rivers = len(river_configs)
+
+    # Get the ids, latitude and longitude of the rivers
+    river_ids = np.empty((n_rivers,), dtype=int)
+    river_names = []
+    lon_indices_array = np.empty_like(river_ids)
+    lat_indices_array = np.empty_like(river_ids)
+    for i, river in enumerate(river_configs):
+        river_ids[i] = river.id
+        river_names.append(river.name)
+        lon_indices_array[i] = river.data_source.longitude_index
+        lat_indices_array[i] = river.data_source.latitude_index
+
+    # Transform the arrays with the indices of the latitude and the longitude
+    # into two DataArrays
+    lon_indices = xr.DataArray(
+        lon_indices_array,
+        dims=["id"],
+        coords={"id": river_ids},
+    )
+    lat_indices = xr.DataArray(
+        lat_indices_array,
+        dims=["id"],
+        coords={"id": river_ids},
+    )
+
+    # This file could be a grib or a NetCDF; luckily, xarray supports both
+    logger.debug('Opening file "%s"', file_path)
+
+    # We use Dask here (chunks={}) because it is way more efficient than
+    # standard xarray when executing the isel method.
+    # By setting "decode_timedelta=True" we ensure that the values of the
+    # step variable are decoded as timedelta64 objects (and we also
+    # silence a warning)
+    try:
+        with xr.open_dataset(
+            file_path, chunks={}, decode_timedelta=True
+        ) as single_ds:
+            dataset_latitudes = single_ds.latitude.values
+            dataset_longitudes = single_ds.longitude.values
+
+            i_lat1, i_lat2 = _find_slice(domain_latitudes, dataset_latitudes)
+            i_lon1, i_lon2 = _find_slice(domain_longitudes, dataset_longitudes)
+
+            # Check that the position of the rivers is coherent with the
+            # domain of the file we have downloaded
+            outside_lat = np.logical_or(
+                lat_indices < i_lat1, lat_indices >= i_lat2
+            )
+            outside_lon = np.logical_or(
+                lon_indices < i_lon1, lon_indices >= i_lon2
+            )
+            if np.any(outside_lat) or np.any(outside_lon):
+                river_outside_index = np.nonzero(
+                    (outside_lon | outside_lat).values
+                )[0][0]
+                river_name = river_names[river_outside_index]
+                river_latitude = lat_indices.values[river_outside_index]
+                river_longitude = lon_indices.values[river_outside_index]
+
+                lat_sorted = np.sort(dataset_latitudes)
+                lon_sorted = np.sort(dataset_longitudes)
+                raise InvalidEfasFile(
+                    f'The domain of the file "{file_path}" (latitudes '
+                    f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
+                    f"and longitudes from {lon_sorted[0]:.3f} to "
+                    f"{lon_sorted[-1]:.3f}) does not contain the river "
+                    f'"{river_name}", whose mouth has latitude '
+                    f"{domain_latitudes[river_latitude]:.3f} and "
+                    f"longitude {domain_longitudes[river_longitude]:.3f}."
+                )
+    except Exception as e:
+        raise type(e)(f"Error while trying to read file {file_path}") from e
+
+    logger.debug("Retrieving rivers' data from the map")
+    file_content = single_ds.isel(
+        longitude=lon_indices - i_lon1,
+        latitude=lat_indices - i_lat1,
+    ).load()
+    return file_content
+
+
+def _read_single_efas_file(
+    file_path: Path,
+    config_content: Iterable[RiverConfigElement],
+    efas_domain: xr.Dataset,
+    temp_dir: Path,
+) -> xr.Dataset:
     """Determines the type of EFAS file and processes it accordingly.
 
-    This function examines the structure and contents of the input dataset to
+    This function reads the EFAS file content and examines its structure to
     identify its type. Based on the file characteristics, it calls the
     corresponding processing function, such as
     `_read_efas_operative_grib_file` for operative GRIB files or
     `_read_efas_historical_file` for historical NetCDF files.
 
     Args:
-        dataset (xr.Dataset): An xarray dataset containing the EFAS data to be
-            analyzed.
+        file_path: Path to the EFAS file to be processed.
+        config_content: Configuration elements for each river to be considered.
+        efas_domain: Dataset containing the EFAS domain coordinates.
+        temp_dir: Directory for temporary file operations.
 
     Returns:
         xr.Dataset: The processed EFAS data in a standard format.
@@ -318,51 +487,64 @@ def _read_single_efas_file(dataset: xr.Dataset) -> xr.Dataset:
     """
     logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
 
-    if "id" not in dataset.dims:
+    raw_content = _read_raw_content_of_efas_file(
+        file_path=file_path,
+        config_content=config_content,
+        efas_domain=efas_domain,
+        temp_dir=temp_dir,
+    )
+
+    # I don't know what the "surface" coordinate is, but it is unnecessary
+    if "surface" in raw_content:
+        logger.debug('Removing coordinate "surface"')
+        del raw_content["surface"]
+
+    if "id" not in raw_content.dims:
         raise InvalidEfasFile(
             f'The current file has no "id" dimension; the current '
-            f"dimensions are: {list(dataset.dims)}"
+            f"dimensions are: {list(raw_content.dims)}"
         )
 
-    if len(dataset.dims) > 2:
+    if len(raw_content.dims) > 2:
         # Files with more than two dimensions usually are forecast files, where
         # we have two dimensions for the time; one is the time when the
         # computation has been performed, the other one is the time of the
         # model
-        if set(dataset.dims) == {"id", "step", "time"}:
-            return _read_efas_forecast_file(dataset)
+        if set(raw_content.dims) == {"id", "step", "time"}:
+            return _read_efas_forecast_file(raw_content)
         raise InvalidEfasFile(
-            f"The current file has unexpected dimensions: {list(dataset.dims)}"
+            "The current file has unexpected dimensions: "
+            f"{list(raw_content.dims)}"
         )
 
-    if "time" in dataset.coords and len(dataset["time"].dims) == 0:
+    if "time" in raw_content.coords and len(raw_content["time"].dims) == 0:
         logger.debug(
             'The file has a coordinate "time" that contains only one element'
         )
-        if "step" in dataset.dims:
+        if "step" in raw_content.dims:
             logger.debug(
                 'The second dimension of the file (beside "id") is "step"; '
                 "This file will be considered an operative grib file"
             )
-            return _read_efas_operative_grib_file(dataset)
+            return _read_efas_operative_grib_file(raw_content)
 
-    if "valid_time" in dataset.coords and "valid_time" in dataset.dims:
+    if "valid_time" in raw_content.coords and "valid_time" in raw_content.dims:
         logger.debug(
             'The file has a coordinate "valid_time" that has the role of the '
             "time; it is a netcdf historical file"
         )
-        return _read_efas_historical_file(dataset)
+        return _read_efas_historical_file(raw_content)
 
-    if "time" in dataset.coords and "valid_time" in dataset.coords:
+    if "time" in raw_content.coords and "valid_time" in raw_content.coords:
         logger.debug(
             'The file has a coordinate named "time"; usually this means that '
             "is a GRIB historical file"
         )
-        return _read_efas_historical_file(dataset)
+        return _read_efas_historical_file(raw_content)
 
     raise InvalidEfasFile(
         f"The EFAS file has a format that this software does not recognize:\n"
-        f"{dataset}"
+        f"{raw_content}"
     )
 
 
@@ -533,174 +715,6 @@ def _read_efas_historical_file(dataset):
         coords={"time": time, "id": dataset["id"]},
         attrs=dataset.attrs,
     )
-
-
-def _read_unzipped_efas_files(
-    input_files: Iterable[Path],
-    config_content: Iterable[RiverConfigElement],
-    efas_domain_file: PathLike,
-) -> xr.Dataset:
-    """Reads and processes unzipped EFAS (European Flood Awareness System)
-    files to extract data based on specified river locations, reshaping the
-    data into a consumable format.
-
-    This function takes EFAS files, configuration content, and the EFAS domain
-    file as input.
-    For each file provided, it extracts data based on configured river indices,
-    validates that data aligns with the specified domain, and reshapes the
-    output. The resulting datasets are concatenated along the time dimension,
-    retaining the best forecast data, and returned as an xarray.Dataset.
-
-    Args:
-        input_files: A collection of file paths indicating the
-            locations of the unzipped EFAS files to process.
-        config_content: An iterable that generates the configuration for
-            each EFAS river, including indices of river locations.
-        efas_domain_file: A path to the EFAS domain file used for latitude and
-            longitude referencing.
-
-    Returns:
-        xr.Dataset: A concatenated dataset containing processed EFAS data,
-            reshaped and indexed by river and time.
-
-    Raises:
-        InvalidEfasFile: If a file's domain does not match the specified
-            river indices, or if there are issues while reading a specific
-            EFAS file.
-    """
-    logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
-
-    input_files = tuple(input_files)
-    if len(input_files) == 0:
-        raise ValueError(
-            "No input files were provided. This function needs at least one "
-            "EFAS file to be processed."
-        )
-    river_configs = tuple(
-        c for c in config_content if c.data_source.type == "EFAS"
-    )
-    n_rivers = len(river_configs)
-
-    # Get the ids, latitude and longitude of the rivers
-    river_ids = np.empty((n_rivers,), dtype=int)
-    river_names = []
-    lon_indices_array = np.empty_like(river_ids)
-    lat_indices_array = np.empty_like(river_ids)
-    for i, river in enumerate(river_configs):
-        river_ids[i] = river.id
-        river_names.append(river.name)
-        lon_indices_array[i] = river.data_source.longitude_index
-        lat_indices_array[i] = river.data_source.latitude_index
-
-    # Transform the arrays with the indices of the latitude and the longitude
-    # into two DataArrays
-    lon_indices = xr.DataArray(
-        lon_indices_array,
-        dims=["id"],
-        coords={"id": river_ids},
-    )
-    lat_indices = xr.DataArray(
-        lat_indices_array,
-        dims=["id"],
-        coords={"id": river_ids},
-    )
-
-    # Open the file with the coordinates of the overall domain to understand
-    # which part of the domain we downloaded
-    with xr.open_dataset(efas_domain_file) as f:
-        domain_latitudes = f.latitude.values
-        domain_longitudes = f.longitude.values
-
-    datasets = []
-    for file_path in input_files:
-        # This file could be a grib or a NetCDF; luckily, xarray supports both
-        logger.debug('Opening file "%s"', file_path)
-        # We use Dask here (chunks={}) because it is way more efficient than
-        # standard xarray when executing the isel method.
-        # By setting "decode_timedelta=True" we ensure that the values of the
-        # step variable are decoded as timedelta64 objects (and we also
-        # silence a warning)
-        try:
-            with xr.open_dataset(
-                file_path, chunks={}, decode_timedelta=True
-            ) as single_ds:
-                dataset_latitudes = single_ds.latitude.values
-                dataset_longitudes = single_ds.longitude.values
-
-                i_lat1, i_lat2 = _find_slice(
-                    domain_latitudes, dataset_latitudes
-                )
-                i_lon1, i_lon2 = _find_slice(
-                    domain_longitudes, dataset_longitudes
-                )
-
-                # Check that the position of the rivers is coherent with the
-                # domain of the file we have downloaded
-                outside_lat = np.logical_or(
-                    lat_indices < i_lat1, lat_indices >= i_lat2
-                )
-                outside_lon = np.logical_or(
-                    lon_indices < i_lon1, lon_indices >= i_lon2
-                )
-                if np.any(outside_lat) or np.any(outside_lon):
-                    river_outside_index = np.nonzero(
-                        (outside_lon | outside_lat).values
-                    )[0][0]
-                    river_name = river_names[river_outside_index]
-                    river_latitude = lat_indices.values[river_outside_index]
-                    river_longitude = lon_indices.values[river_outside_index]
-
-                    lat_sorted = np.sort(dataset_latitudes)
-                    lon_sorted = np.sort(dataset_longitudes)
-                    raise InvalidEfasFile(
-                        f'The domain of the file "{file_path}" (latitudes '
-                        f"from {lat_sorted[0]:.3f} to {lat_sorted[-1]:.3f} "
-                        f"and longitudes from {lon_sorted[0]:.3f} to "
-                        f"{lon_sorted[-1]:.3f}) does not contain the river "
-                        f'"{river_name}", whose mouth has latitude '
-                        f"{domain_latitudes[river_latitude]:.3f} and "
-                        f"longitude {domain_longitudes[river_longitude]:.3f}."
-                    )
-        except ValueError as e:
-            raise ValueError(
-                f"ValueError while trying to read file {file_path}"
-            ) from e
-
-        logger.debug("Retrieving rivers' data from the map")
-        file_content = single_ds.isel(
-            longitude=lon_indices - i_lon1,
-            latitude=lat_indices - i_lat1,
-        ).load()
-
-        # Remove the surface variable
-        if "surface" in file_content:
-            logger.debug('Removing coordinate "surface"')
-            del file_content["surface"]
-
-        try:
-            original_dataset = _read_single_efas_file(file_content)
-        except InvalidEfasFile as exception:
-            raise InvalidEfasFile(
-                f'Error while reading EFAS file "{file_path}"'
-            ) from exception
-
-        logger.debug(
-            "Adding a new dataset to the collection: %s file have been read",
-            len(datasets) + 1,
-        )
-        datasets.append(original_dataset)
-
-    logger.debug("Concatenating the datasets...")
-    concat_dataset = xr.concat(datasets, dim="time")
-
-    logger.debug("Getting the best forecast (if needed)")
-    _, slicing_indices = _get_best_unique_element(
-        concat_dataset.time.values, concat_dataset.computation_date.values
-    )
-
-    efas_data = concat_dataset.isel(time=slicing_indices)
-
-    return efas_data
 
 
 def generate_efas_climatology(
