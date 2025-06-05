@@ -8,10 +8,12 @@ from multiprocessing.pool import Pool
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from typing import Literal
 from uuid import uuid1
 from zipfile import ZipFile
 
+import dask
 import numpy as np
 import xarray as xr
 
@@ -412,15 +414,80 @@ def _read_raw_content_of_unzipped_efas_file(
     # This file could be a grib or a NetCDF; luckily, xarray supports both
     logger.debug('Opening file "%s"', file_path)
 
-    # We use Dask here (chunks={}) because it is way more efficient than
-    # standard xarray when executing the isel method.
-    # By setting "decode_timedelta=True" we ensure that the values of the
-    # step variable are decoded as timedelta64 objects (and we also
-    # silence a warning)
+    open_file_args: dict[str, Any] = {"decode_timedelta": True}
+    file_suffix = file_path.suffix.lower()
+    if file_suffix in (".grib", ".grb"):
+        logging.debug(
+            "The file %s is a grib file (suffix = %s); using cfgrib engine",
+            file_path,
+            file_suffix,
+        )
+        open_file_args["engine"] = "cfgrib"
+        open_file_args["backend_kwargs"] = {"indexpath": ""}
+    else:
+        logging.debug(
+            "The file %s is a NetCDF file (suffix = %s)",
+            file_path,
+            file_suffix,
+        )
+
     try:
-        with xr.open_dataset(
-            file_path, chunks={}, decode_timedelta=True
-        ) as single_ds:
+        with ExitStack() as current_stack:
+            # File size of the file that we have to open in MegaBytes
+            file_size = file_path.stat().st_size // 1024 // 1024
+
+            # We decide how to open the file; EFAS files can be of several GB
+            # in size, but we only need a small portion of them (the
+            # rivers' data).
+            # Unfortunately, the data that we need is scattered around the
+            # file and, therefore, reading the data may be computationally
+            # expensive. We use the following strategy: if the file is smaller
+            # than 1024 MB, we simply load it into memory, and that's it.
+            # Otherwise, we open it, and we read its values from the file
+            # (which is more I/O expensive). If the file is a NetCDF file, it
+            # is important to specify that chunks = {} to split the result
+            # into chunks, and this is way more efficient than the standard
+            # Xarray implementation when executing the isel method.
+            # Finally, in any case, we decode the time variable as timedelta64
+            # objects by using the flag decode_timedelta=True.
+            file_size_limit = 1024  # Mb
+            if file_size >= file_size_limit:
+                logger.debug(
+                    "File size is %s MB; it will be opened using Xarray "
+                    "open_dataset method",
+                    file_size,
+                )
+
+                if open_file_args.get("engine", "netcdf") != "cfgrib":
+                    open_file_args["chunks"] = {}
+
+                logger.debug(
+                    "Opening file %s using the following arguments: %s",
+                    file_path,
+                    open_file_args,
+                )
+                single_ds = current_stack.enter_context(
+                    xr.open_dataset(
+                        file_path,
+                        **open_file_args,
+                    )
+                )
+            else:
+                logger.debug(
+                    "File size is just %s MB; it will be opened using "
+                    "Xarray load_dataset method",
+                    file_size,
+                )
+                logger.debug(
+                    "Opening file %s using the following arguments: %s",
+                    file_path,
+                    open_file_args,
+                )
+                single_ds = xr.load_dataset(
+                    file_path,
+                    **open_file_args,
+                )
+
             dataset_latitudes = single_ds.latitude.values
             dataset_longitudes = single_ds.longitude.values
 
@@ -494,12 +561,13 @@ def _read_single_efas_file(
     """
     logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
 
-    raw_content = _read_raw_content_of_efas_file(
-        file_path=file_path,
-        config_content=config_content,
-        efas_domain=efas_domain,
-        temp_dir=temp_dir,
-    )
+    with dask.config.set(scheduler="synchronous"):
+        raw_content = _read_raw_content_of_efas_file(
+            file_path=file_path,
+            config_content=config_content,
+            efas_domain=efas_domain,
+            temp_dir=temp_dir,
+        )
 
     # I don't know what the "surface" coordinate is, but it is unnecessary
     if "surface" in raw_content:
