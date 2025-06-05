@@ -1,7 +1,9 @@
 from datetime import datetime
 from datetime import timedelta
+from itertools import pairwise
 from itertools import product as cart_prod
 from logging import getLogger
+from multiprocessing import Pool
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import AsyncMock
@@ -328,6 +330,58 @@ def test_read_efas_zipped_data(config_example, efas_domain_file, tmp_path):
     assert output_dims == ("time", "id")
 
     n_days = (end_date - start_date).days
+    assert test_dataset.dis06.shape[0] == n_days * 4
+    assert test_dataset.dis06.shape[1] == len(config_example)
+
+
+def test_read_efas_zipped_data_in_parallel(
+    config_example, efas_domain_file, tmp_path
+):
+    """
+    GIVEN a set of EFAS files,
+    WHEN the function read_efas_data_files is called with a multiprocess pool,
+    THEN it returns a dataset with the correct dimensions and values.
+    """
+    tmp_path = tmp_path / "test_read_efas_zipped_data"
+    tmp_path.mkdir(exist_ok=True)
+
+    efas_domain = xr.load_dataset(efas_domain_file)
+
+    start_date = datetime(2024, 1, 1)
+    dates = [start_date]
+    while dates[-1] < datetime(2024, 11, 30):
+        dates.append(
+            datetime(
+                year=dates[-1].year,
+                month=dates[-1].month + 1,
+                day=1,
+            )
+        )
+
+    file_paths = []
+    for d1, d2 in pairwise(dates):
+        file_generator = EfasLikeFileGenerator(
+            tmp_path / f"t_{d1.month:02}",
+            d1,
+            d2,
+            efas_domain=efas_domain,
+        )
+        output_file = tmp_path / f"efas_{d1.month:02}.zip"
+        file_generator.create(output_file)
+        file_paths.append(output_file)
+
+    with Pool(2) as p:
+        test_dataset = read_efas_data_files(
+            file_paths,
+            config_example,
+            efas_domain_file=efas_domain_file,
+            pool=p,
+        )
+    output_dims = test_dataset.dis06.dims
+
+    assert output_dims == ("time", "id")
+
+    n_days = (dates[-1] - dates[0]).days
     assert test_dataset.dis06.shape[0] == n_days * 4
     assert test_dataset.dis06.shape[1] == len(config_example)
 
