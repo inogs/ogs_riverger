@@ -792,7 +792,7 @@ class EfasOperationalDownloader:
         return True, None
 
     async def _get_remote_server_available_files(
-        self,
+        self, retries: int = 10
     ) -> dict[str, tuple[Path, int]]:
         """Checks which files are available on the server.
 
@@ -800,22 +800,64 @@ class EfasOperationalDownloader:
         files stored in this directory. The method returns a dictionary that
         maps each file name to its corresponding path and size.
 
+        Args:
+            retries: The number of retries to perform. If the method fails, it
+                will try again this number of times before raising an error.
+
         Returns:
             A dictionary where keys are file names (str) and values are tuples
             of two elements such that:
             - the first element of the tuple is the file's path on the server.
             - the second element of the tuple is the file's size in bytes.
         """
-        async with aioftp.Client.context(
-            EFAS_FTP_URL,
-            port=EFAS_FTP_PORT,
-            user=self._user,
-            password=self._password.get_secret_value(),
-        ) as client:
-            available_files = {
-                p.name: (p, int(p_stat["size"]))
-                for p, p_stat in await client.list(EFAS_FTP_DIR)
-            }
+        logger = logging.getLogger(f"{__name__}.{inspect.stack()[0][3]}")
+        for attempt in range(retries):
+            try:
+                logger.debug(
+                    "Connecting to %s to check the available files",
+                    EFAS_FTP_URL,
+                )
+                async with aioftp.Client.context(
+                    EFAS_FTP_URL,
+                    port=EFAS_FTP_PORT,
+                    user=self._user,
+                    password=self._password.get_secret_value(),
+                    socket_timeout=30,
+                    connection_timeout=30,
+                ) as client:
+                    logger.debug(
+                        "Connection opened; retrieving the list of files"
+                    )
+                    available_files = {
+                        p.name: (p, int(p_stat["size"]))
+                        for p, p_stat in await client.list(EFAS_FTP_DIR)
+                    }
+            except Exception as e:
+                if attempt == retries - 1:
+                    logger.error(
+                        "Failed to retrieve the list of files from the FTP "
+                        "server for %d times; we will not try again. The last "
+                        "exception was: ",
+                        retries,
+                        exc_info=e,
+                    )
+                    raise
+                else:
+                    wait_for = attempt * 4
+                    logger.warning(
+                        "Failed to retrieve the list of files from the FTP "
+                        "server (attempt number %d): retrying again in %d "
+                        "seconds;",
+                        wait_for,
+                        attempt + 1,
+                        exc_info=e,
+                    )
+                    await asyncio.sleep(wait_for)
+
+        logger.debug(
+            "Data received; %d files are available on the server",
+            len(available_files),
+        )
         return available_files
 
     async def _single_download(
