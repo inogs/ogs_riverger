@@ -10,12 +10,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from typing import Literal
+from typing import TYPE_CHECKING
 from uuid import uuid1
 from zipfile import ZipFile
 
 import dask
 import numpy as np
-import xarray as xr
+
+if TYPE_CHECKING:
+    import xarray as xr
+else:
+    import ogs_riverger.utils.lazy_xarray as xr
 
 import ogs_riverger.efas.download_tools as efas_download
 from ogs_riverger.efas.download_tools import EfasDataSource
@@ -81,7 +86,7 @@ def read_efas_data_files(
     config_content: Iterable[RiverConfigElement],
     efas_domain_file: PathLike,
     pool: None | Pool = None,
-) -> xr.Dataset:
+) -> "xr.Dataset":
     """Reads and merges the content of multiple downloaded EFAS data files.
 
     EFAS data files are distributed as GRIB or NetCDF files, optionally
@@ -149,9 +154,9 @@ def read_efas_data_files(
 def _read_raw_content_of_efas_file(
     file_path: Path,
     config_content: Iterable[RiverConfigElement],
-    efas_domain: xr.Dataset,
+    efas_domain: "xr.Dataset",
     temp_dir: Path,
-) -> xr.Dataset:
+) -> "xr.Dataset":
     """
     Reads the raw content of an EFAS file.
 
@@ -224,8 +229,8 @@ def _read_raw_content_of_efas_file(
 def _read_raw_content_of_unzipped_efas_file(
     file_path: Path,
     config_content: Iterable[RiverConfigElement],
-    efas_domain: xr.Dataset,
-) -> xr.Dataset:
+    efas_domain: "xr.Dataset",
+) -> "xr.Dataset":
     """
     Reads and processes the raw content of an unzipped EFAS file to extract
     specific river data based on given configurations and EFAS domain.
@@ -409,9 +414,9 @@ def _read_raw_content_of_unzipped_efas_file(
 def _read_single_efas_file(
     file_path: Path,
     config_content: Iterable[RiverConfigElement],
-    efas_domain: xr.Dataset,
+    efas_domain: "xr.Dataset",
     temp_dir: Path,
-) -> xr.Dataset:
+) -> "xr.Dataset":
     """Determines the type of EFAS file and processes it accordingly.
 
     This function reads the EFAS file content and examines its structure to
@@ -497,7 +502,7 @@ def _read_single_efas_file(
     )
 
 
-def _read_efas_forecast_file(dataset: xr.Dataset):
+def _read_efas_forecast_file(dataset: "xr.Dataset"):
     """Read the content of a forecast EFAS file.
 
     This function is called by `_read_single_efas_file` when the file has
@@ -550,7 +555,7 @@ def _read_efas_forecast_file(dataset: xr.Dataset):
     return dataset_sliced
 
 
-def _read_efas_operative_grib_file(dataset: xr.Dataset):
+def _read_efas_operative_grib_file(dataset: "xr.Dataset"):
     """Read the content of an operative EFAS file.
 
     This function is called by `_read_single_efas_file` when the file has

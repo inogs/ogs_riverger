@@ -248,9 +248,14 @@ class RiverConfig(RootModel, Iterable):
     ):
         biogeochemical = {}
         if "biogeochemical_profile" in raw_river:
-            biogeochemical = profiles[
-                raw_river["biogeochemical_profile"]
-            ].copy()
+            profile_name = raw_river["biogeochemical_profile"]
+            if profile_name not in profiles:
+                raise ValueError(
+                    f'River "{raw_river["name"]}" references a '
+                    f'biogeochemical profile "{profile_name}" that is not '
+                    f"defined in the configuration file."
+                )
+            biogeochemical = profiles[profile_name].copy()
 
         if "biogeochemical" in raw_river:
             biogeochemical.update(raw_river["biogeochemical"])
