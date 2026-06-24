@@ -41,6 +41,13 @@ def config_file_example(tmp_path):
         "temperature_variation": 5,
         "average_salinity": 5
       },
+      "bgc_profiles": {
+        "tyr": {
+          "B1c": 100,
+          "B1n": 10,
+          "B1p": 1
+        }
+      },
       "default_model": "stem_flux",
       "rivers": [
         {
