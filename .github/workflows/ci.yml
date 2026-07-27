@@ -9,11 +9,11 @@ on:
 jobs:
   test:
     name: "Test - Python ${{ matrix.python-version}}"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     strategy:
       matrix:
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.10", "3.12", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
           lfs: true
 
       - name: Install Poetry
-        run: pipx install poetry==2.1.3
+        run: pipx install poetry==2.4.1
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
