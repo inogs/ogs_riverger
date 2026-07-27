@@ -498,7 +498,7 @@ class FromDatasetRiverComponent(RiverComponent):
             raise ValueError(
                 "time_list must be a strictly increasing list of dates and "
                 "the minimum allowed difference between two dates is 1 "
-                f"second. Received: {time_list}"
+                f"millisecond. Received: {time_list}"
             )
 
         if len(self._values.shape) != 1:
@@ -637,7 +637,7 @@ class FromDatasetRiverComponent(RiverComponent):
             time_diff = np.abs(
                 self._time_array[values_indices] - requested_times
             )
-            max_error = np.timedelta64(self._max_error, "ms")
+            max_error = np.timedelta64(int(self._max_error.total_seconds() * 1000), "ms")
             if np.any(time_diff > max_error):
                 t_index = np.where(time_diff > max_error)[0][0]
                 t = time_list[t_index]

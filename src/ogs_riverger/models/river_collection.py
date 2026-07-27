@@ -179,7 +179,7 @@ class RiverCollection(Collection[River]):
     def _build_mer_river_collection(
         river_config: RiverConfig,
         get_discharge: Callable[[int], RiverComponent],
-        river_positions: dict,
+        river_positions: Iterable[dict[str, Any]],
     ) -> "RiverCollection":
         """RiverCollection with configured river models.
 
@@ -376,7 +376,7 @@ class RiverCollection(Collection[River]):
     def build_climatological_mer_river_collection(
         river_config: RiverConfig,
         efas_climatological_data: xr.Dataset,
-        river_positions: dict,
+        river_positions: Iterable[dict[str, Any]],
     ) -> "RiverCollection":
         """River collection from configuration and climatological data.
 

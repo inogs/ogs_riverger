@@ -113,7 +113,7 @@ def datetime_to_datetime64(
     if is_timezone_aware(dt):
         if dt.tzname() != "UTC":
             warn_problem = f" has its timezone set to {dt.tzname()}."
-            warn(warn_message + warn_problem)
+            warn(warn_message + warn_problem, stacklevel=2)
             dt = dt.astimezone(timezone.utc)
     else:
         warn_problem = " was instead a naive datetime object."
