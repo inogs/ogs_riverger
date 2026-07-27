@@ -1,4 +1,9 @@
 from datetime import datetime
+from datetime import timezone
+from typing import Literal
+from warnings import warn
+
+import numpy as np
 
 
 class MixedTimezoneAwareness(ValueError):
@@ -79,3 +84,42 @@ def check_all_timezone_awareness(*datetime_objects: datetime) -> bool:
             )
 
     return timezone_aware
+
+
+def datetime_to_datetime64(
+    dt: datetime,
+    precision: Literal["s", "ms", "us", "ns"] = "us",
+) -> np.datetime64:
+    """Convert datetime to datetime64.
+
+    If the datetime object is timezone-aware, it will be converted to
+    UTC before conversion to datetime64.
+    This function silences a warning that happens every time a time-aware
+    object is converted into a datetime64 object and triggers a warning when
+    the code uses non-UTC timezones or naive datetime objects.
+
+    Args:
+        dt: The datetime object to convert.
+        precision: The precision of the datetime64 object.
+
+    Returns:
+        The datetime64 object.
+    """
+    warn_message = (
+        "A datetime object that was expected to be timezone-aware and to "
+        "have its timezone be set to UTC "
+    )
+
+    if is_timezone_aware(dt):
+        if dt.tzname() != "UTC":
+            warn_problem = f" has its timezone set to {dt.tzname()}."
+            warn(warn_message + warn_problem)
+            dt = dt.astimezone(timezone.utc)
+    else:
+        warn_problem = " was instead a naive datetime object."
+        warn(warn_message + warn_problem)
+
+    # Remove the timezone, so the conversion to datetime64 does not trigger a
+    # warning
+    naive_dt = dt.replace(tzinfo=None)
+    return np.datetime64(naive_dt, precision)
