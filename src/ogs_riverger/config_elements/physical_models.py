@@ -22,3 +22,8 @@ PhysicalComponentConfig = Annotated[
     "PhysicalComponent",
     Field(discriminator="type"),
 ]
+
+
+class PhysicalModelConfig(BaseModel):
+    temperature: PhysicalComponentConfig
+    salinity: PhysicalComponentConfig

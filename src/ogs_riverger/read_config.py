@@ -1,5 +1,6 @@
 import json
 from collections import OrderedDict
+from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
@@ -15,8 +16,8 @@ from pydantic import Field
 from pydantic import model_validator
 from pydantic import RootModel
 
+from ogs_riverger.config_elements.physical_models import PhysicalModelConfig
 from ogs_riverger.efas.efas_config import EFASConfigElement
-from ogs_riverger.physical_models import PhysicalModelConfig
 
 
 BGCProfile: TypeAlias = dict[str, float]
@@ -115,6 +116,7 @@ class RiverConfigElement(BaseModel):
     biogeochemical: BGCProfile = Field(default_factory=dict)
     concentrations: list[str] = Field(default_factory=list)
     biogeochemical_profile: str | None = None
+    runoff_factor: float | None = None
 
 
 class RiverConfig(RootModel, Iterable):
@@ -365,3 +367,13 @@ class RiverConfig(RootModel, Iterable):
 
     def __len__(self):
         return len(self.root)
+
+    def filter(
+        self, condition: Callable[[RiverConfigElement], bool]
+    ) -> "RiverConfig":
+        rivers = OrderedDict()
+        for r_id, river in self.root.items():
+            if not condition(river):
+                continue
+            rivers[r_id] = river
+        return self.__class__(root=rivers)
